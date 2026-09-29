@@ -1,0 +1,18 @@
+# Exercice 1.1 — Explorer le cluster
+GET /
+GET _cat/nodes?v
+GET _cat/indices?v&expand_wildcards=all
+
+# Exercice 1.2 — CRUD
+PUT essai/_doc/1
+{ "titre": "Data Engineer", "ville": "Montpellier" }
+
+GET essai/_doc/1
+
+POST essai/_update/1
+{ "doc": { "contrat": "CDI" } }
+
+POST essai/_doc
+{ "titre": "DevOps", "ville": "Lyon" }
+
+DELETE essai/_doc/1
