@@ -98,3 +98,35 @@ Avec `"dynamic": "strict"`, tout champ absent du mapping fait rejeter le documen
 - Le schéma reste maîtrisé : pas de type deviné de travers (cf. exercice 1.3, `salaire` en `text`) qu'on ne pourrait plus corriger sans recréer l'index.
 - Les erreurs sont visibles immédiatement : une faute de frappe dans un nom de champ (`salaire_mx`) ou un changement de format côté producteur est rejeté à l'ingestion au lieu de polluer silencieusement l'index.
 - Pas d'explosion du mapping : des clés imprévues (données utilisateur, JSON variable) ne créent pas des milliers de champs, qui consomment de la mémoire et dégradent le cluster.
+
+## Exercice 2.2
+
+**Le nombre de documents a-t-il doublé ?**
+
+Non. Après une relance sans `--reset`, l'index contient toujours 5000 documents : les 5000 offres ont été réécrites, pas ajoutées.
+
+**Pourquoi fixer `_id` à partir du champ `id` est-il essentiel ?**
+
+Chaque offre a toujours le même `_id` (`OFF-00001`, …). L'action `index` du bulk remplace alors le document existant au lieu d'en créer un nouveau : l'ingestion est idempotente, on peut la relancer (reprise après erreur, mise à jour des données) sans créer de doublons. Seul `_version` augmente.
+
+**Que se passerait-il avec des identifiants générés par Elasticsearch ?**
+
+Chaque exécution attribuerait un nouvel `_id` aléatoire à chaque offre (comme `POST essai/_doc` à l'exercice 1.2) : les 5000 offres seraient ajoutées en double, soit 10000 documents après la deuxième exécution, 15000 après la troisième, etc. Impossible alors de mettre à jour ou de retrouver une offre par son identifiant métier.
+
+## Exercice 2.3
+
+Sortie de `python ingest.py` avec l'offre `OFF-99999` contenant `"prime": 3000` :
+
+```
+Erreur : {'index': {'_index': 'offres', '_id': 'OFF-99999', 'status': 400, 'error': {'type': 'strict_dynamic_mapping_exception', 'reason': '[1:703] mapping set to strict, dynamic introduction of [prime] within [_doc] is not allowed'}}}
+5000 documents indexés, 1 erreurs
+5000 documents dans 'offres'
+```
+
+**Le lot entier est-il rejeté ou seulement ce document ?**
+
+Seulement ce document. L'API `_bulk` renvoie un statut par opération : `OFF-99999` est refusé (400, `strict_dynamic_mapping_exception` à cause du champ `prime`), les 5000 autres offres du fichier sont indexées normalement.
+
+**Quel est l'intérêt de `raise_on_error=False` pour un pipeline ?**
+
+Le script ne s'arrête pas à la première erreur : les documents valides sont chargés, et les erreurs sont collectées puis affichées (identifiant, type, raison). Un document défectueux ne bloque pas toute l'ingestion, et on peut ensuite corriger ou rejouer uniquement les documents rejetés. Avec `raise_on_error=True` (valeur par défaut), `helpers.bulk` lèverait une exception `BulkIndexError` et le traitement s'interromprait.

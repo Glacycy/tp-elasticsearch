@@ -20,15 +20,28 @@ MAPPINGS = {
     "dynamic": "strict",
     "properties": {
         "id": {"type": "keyword"},
-        # TODO 1 : compléter le mapping des 12 autres champs (voir le tableau de l'énoncé)
+        "titre": {"type": "text", "analyzer": "french", "fields": {"brut": {"type": "keyword"}}},
+        "entreprise": {"type": "keyword"},
+        "description": {"type": "text", "analyzer": "french"},
+        "competences": {"type": "keyword", "fields": {"texte": {"type": "text", "analyzer": "french"}}},
+        "ville": {"type": "keyword"},
+        "localisation": {"type": "geo_point"},
+        "contrat": {"type": "keyword"},
+        "teletravail": {"type": "keyword"},
+        "experience_annees": {"type": "integer"},
+        "salaire_min": {"type": "integer"},
+        "salaire_max": {"type": "integer"},
+        "date_publication": {"type": "date"},
     },
 }
 
 
 def lire_actions(fichier: Path) -> Iterator[dict]:
-    """TODO 2 : générateur qui lit le fichier ligne à ligne et produit
-    {"_index": INDEX, "_id": <id de l'offre>, "_source": <document>}."""
-    raise NotImplementedError
+    """Générateur : une action bulk par ligne, _id stable = id de l'offre."""
+    with fichier.open(encoding="utf-8") as f:
+        for ligne in f:
+            doc = json.loads(ligne)
+            yield {"_index": INDEX, "_id": doc["id"], "_source": doc}
 
 
 def main() -> None:
@@ -40,10 +53,19 @@ def main() -> None:
     es = get_client()
     print("Cluster :", es.info()["version"]["number"])
 
-    # TODO 3 : si --reset, supprimer l'index (sans erreur s'il n'existe pas)
-    # TODO 4 : créer l'index s'il n'existe pas, avec SETTINGS et MAPPINGS
-    # TODO 5 : ingérer avec helpers.bulk (chunk_size=1000, raise_on_error=False), afficher les erreurs
-    # TODO 6 : rafraîchir l'index puis afficher le nombre de documents (es.count)
+    if args.reset:
+        es.indices.delete(index=INDEX, ignore_unavailable=True)
+    if not es.indices.exists(index=INDEX):
+        es.indices.create(index=INDEX, settings=SETTINGS, mappings=MAPPINGS)
+        print(f"Index '{INDEX}' créé")
+
+    ok, erreurs = helpers.bulk(es, lire_actions(args.fichier), chunk_size=1000, raise_on_error=False)
+    for erreur in erreurs:
+        print("Erreur :", erreur)
+    print(f"{ok} documents indexés, {len(erreurs)} erreurs")
+
+    es.indices.refresh(index=INDEX)
+    print(f"{es.count(index=INDEX)['count']} documents dans '{INDEX}'")
 
 
 if __name__ == "__main__":
