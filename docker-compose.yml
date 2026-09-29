@@ -36,12 +36,13 @@ services:
       elasticsearch:
         condition: service_healthy
     user: "0"
-    command: >
+    # Les retours à la ligne sont conservés : chaque ligne de curl finit par « \ »
+    command: |
       bash -c '
         echo "Définition du mot de passe kibana_system";
-        until curl -s -X POST -u "elastic:${ELASTIC_PASSWORD}"
-          -H "Content-Type: application/json"
-          http://elasticsearch:9200/_security/user/kibana_system/_password
+        until curl -s -X POST -u "elastic:${ELASTIC_PASSWORD}" \
+          -H "Content-Type: application/json" \
+          http://elasticsearch:9200/_security/user/kibana_system/_password \
           -d "{\"password\":\"${KIBANA_PASSWORD}\"}" | grep -q "^{}"; do sleep 5; done;
         echo "OK";
       '
