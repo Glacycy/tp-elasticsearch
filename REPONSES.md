@@ -130,3 +130,74 @@ Seulement ce document. L'API `_bulk` renvoie un statut par opération : `OFF-999
 **Quel est l'intérêt de `raise_on_error=False` pour un pipeline ?**
 
 Le script ne s'arrête pas à la première erreur : les documents valides sont chargés, et les erreurs sont collectées puis affichées (identifiant, type, raison). Un document défectueux ne bloque pas toute l'ingestion, et on peut ensuite corriger ou rejouer uniquement les documents rejetés. Avec `raise_on_error=True` (valeur par défaut), `helpers.bulk` lèverait une exception `BulkIndexError` et le traitement s'interromprait.
+
+## Exercice 3.1
+
+**Quels mots disparaissent avec `french` ?**
+
+Les mots vides (*stop words*) : `les`, `sur`, `des`. Ils sont trop fréquents pour aider à distinguer les documents.
+
+**Que devient `l'analyse` ?**
+
+`analys`. L'élision retire `l'`, puis la racinisation (*stemming*) réduit le mot à sa racine. Avec `standard`, `l'analyse` reste un seul token, apostrophe comprise : une recherche sur « analyse » ne le retrouverait pas.
+
+**Analysez « donnée » puis « données » avec chaque analyseur : obtenez-vous le même terme ?**
+
+- `standard` : non, `donnée` et `données` restent deux termes différents (seule la mise en minuscules est appliquée).
+- `french` : oui, les deux donnent `done` (pluriel supprimé, accents retirés, racinisation).
+
+**Qu'en déduisez-vous pour la recherche ?**
+
+Avec l'analyseur `french`, une recherche sur « donnée » retrouve les documents contenant « données » (et inversement) : la recherche devient insensible au pluriel, au féminin, aux accents et aux conjugaisons. Il faut appliquer le même analyseur à l'indexation et à la recherche, sinon les tokens de la question ne correspondent pas à ceux de l'index. C'est pourquoi `titre`, `description` et `competences.texte` utilisent `french` dans le mapping de `offres`.
+
+## Exercice 3.2
+
+**Pourquoi les deux requêtes `term` renvoient-elles 0 résultat ?**
+
+`term` cherche la valeur exacte, sans analyser la question.
+
+- `ville` est un `keyword` : la valeur indexée est `Paris` avec une majuscule, telle quelle. `paris` ne correspond à aucun terme (la comparaison est sensible à la casse).
+- `titre` est un `text` analysé par `french` : l'index ne contient pas la chaîne `Data Engineer Senior` mais des tokens séparés et normalisés (`data`, `engin`, `senio`). La phrase entière non analysée ne correspond à aucun d'eux.
+
+**Corrections**
+
+- `{ "term": { "ville": "Paris" } }` : 1492 offres.
+- `{ "term": { "titre.brut": "Data Engineer Senior" } }` : 103 offres. Le sous-champ `brut` est un `keyword` qui stocke le titre complet tel quel.
+
+**Relancez la première avec `"operator": "and"` : que change le nombre de résultats ?**
+
+Il passe de 4190 à 393 résultats. Par défaut, `match` combine les tokens en OU : une offre contenant seulement « projets » suffit, et presque toutes les descriptions en parlent. Avec `and`, l'offre doit contenir les deux tokens (« projets » et « bancaires »), la recherche est donc beaucoup plus précise.
+
+## Exercice 3.3
+
+**Quel paramètre rattrape la faute ?**
+
+`"fuzziness": "AUTO"`. Sans lui, « kubernetis » (token `kuberneti`) ne correspond à aucun terme de l'index (`kubernet` pour « Kubernetes ») : les 739 résultats viennent uniquement de « terraform ». Avec `fuzziness`, Elasticsearch accepte les termes à une distance d'édition près (1 à 2 caractères selon la longueur du mot) : `kuberneti` retrouve `kubernet`, et on passe à 969 résultats.
+
+**Comment évolue l'ordre des résultats avec le poids sur `titre` ?**
+
+Il ne change pas : mêmes documents, mêmes scores. Aucun titre ne contient « kubernetes » ni « terraform » (les titres sont de la forme métier + niveau, comme « Architecte Cloud Lead ») : le champ `titre` ne contribue pas au score, et le multiplier par 3 ne modifie rien. Le poids ne joue que si le terme recherché apparaît dans le champ pondéré (par exemple une recherche « architecte cloud » ferait remonter les offres dont le titre correspond).
+
+## Exercice 3.4
+
+**Comparez les `_score` avec et sans le bloc `should`.**
+
+Les deux requêtes renvoient les mêmes 25 offres : `should` n'est pas obligatoire ici puisque `must` et `filter` sont présents, il ne filtre rien.
+
+- Sans `should` : toutes les offres ont le même score (2.048).
+- Avec `should` : les offres dont `competences` contient `Elasticsearch` passent à 4.014 et remontent en tête, les autres restent à 2.048.
+
+`should` sert donc uniquement de bonus de pertinence.
+
+**Pourquoi placer les critères exacts dans `filter` plutôt que dans `must` (deux raisons) ?**
+
+1. Pas de calcul de score : un critère exact (contrat, ville, salaire) répond par oui ou non, il n'a pas à influencer la pertinence. Dans `must`, il ajouterait des points au score et fausserait le classement ; dans `filter`, seul le texte recherché détermine l'ordre.
+2. Performance : sans score à calculer, le filtre est plus rapide, et son résultat est mis en cache par Elasticsearch, donc réutilisé directement pour les requêtes suivantes qui ont le même filtre.
+
+## Exercice 3.6
+
+**Pourquoi `from` + `size` est-il limité à 10 000 par défaut, et quelle API utiliser au-delà ?**
+
+Pour renvoyer la page commençant à `from`, chaque shard doit trouver et trier ses `from + size` meilleurs résultats, puis le nœud coordinateur les fusionne et jette les `from` premiers. Le coût en mémoire et en CPU augmente donc avec la profondeur de la page : la limite `index.max_result_window` (10 000) protège le cluster contre ces requêtes coûteuses.
+
+Au-delà, on utilise `search_after` avec un point in time (PIT) : on ouvre un PIT (`POST offres/_pit?keep_alive=1m`) qui fige une vue cohérente de l'index, on trie sur un critère stable, puis chaque page repart des valeurs de tri du dernier résultat de la page précédente (`search_after`). Chaque requête ne traite que `size` documents, quelle que soit la profondeur.
