@@ -14,12 +14,19 @@ from es_client import INDEX, get_client
 
 
 def construire_requete(args: argparse.Namespace) -> dict:
-    """TODO : requête bool
-    - must   : multi_match sur titre (x3), competences.texte (x2), description, tolérant aux fautes
-    - filter : ville, contrat, teletravail (term), salaire_max >= --salaire-min (range),
-               distance autour d'un point (geo_distance) si --autour est fourni
-    """
-    raise NotImplementedError
+    """Requête bool : texte pondéré et tolérant aux fautes, filtres optionnels."""
+    filtres = [{"term": {champ: valeur}} for champ, valeur in
+               (("ville", args.ville), ("contrat", args.contrat), ("teletravail", args.teletravail)) if valeur]
+    if args.salaire_min is not None:
+        filtres.append({"range": {"salaire_max": {"gte": args.salaire_min}}})
+    if args.autour:
+        lat, lon = map(float, args.autour.split(","))
+        filtres.append({"geo_distance": {"distance": args.rayon, "localisation": {"lat": lat, "lon": lon}}})
+    return {"bool": {
+        "must": {"multi_match": {"query": args.texte, "fuzziness": "AUTO",
+                                 "fields": ["titre^3", "competences.texte^2", "description"]}},
+        "filter": filtres,
+    }}
 
 
 def main() -> None:
@@ -36,10 +43,26 @@ def main() -> None:
     args = p.parse_args()
 
     es = get_client()
-    # TODO : appeler es.search avec la requête, la pagination (from_, size), un highlight sur
-    # description et trois facettes (aggs terms) : ville, contrat, compétences.
-    # Afficher : total, puis pour chaque résultat score, titre, entreprise, ville, contrat, salaire,
-    # l'extrait surligné, et enfin les facettes.
+    r = es.search(
+        index=INDEX,
+        query=construire_requete(args),
+        from_=(args.page - 1) * args.taille,
+        size=args.taille,
+        highlight={"fields": {"description": {}}},
+        aggs={champ: {"terms": {"field": champ}} for champ in ("ville", "contrat", "competences")},
+    )
+
+    print(f"{r['hits']['total']['value']} offres (page {args.page})")
+    for hit in r["hits"]["hits"]:
+        o = hit["_source"]
+        salaire = f"{o['salaire_min']}-{o['salaire_max']} €" if "salaire_min" in o else "salaire non précisé"
+        print(f"\n[{hit['_score']:.2f}] {o['titre']} — {o['entreprise']} — {o['ville']}, {o['contrat']}, {salaire}")
+        for extrait in hit.get("highlight", {}).get("description", []):
+            print("   ", extrait)
+
+    print("\nFacettes")
+    for nom, agg in r["aggregations"].items():
+        print(f"  {nom} : " + ", ".join(f"{b['key']} ({b['doc_count']})" for b in agg["buckets"]))
 
 
 if __name__ == "__main__":

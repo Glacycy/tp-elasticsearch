@@ -201,3 +201,34 @@ Les deux requêtes renvoient les mêmes 25 offres : `should` n'est pas obligatoi
 Pour renvoyer la page commençant à `from`, chaque shard doit trouver et trier ses `from + size` meilleurs résultats, puis le nœud coordinateur les fusionne et jette les `from` premiers. Le coût en mémoire et en CPU augmente donc avec la profondeur de la page : la limite `index.max_result_window` (10 000) protège le cluster contre ces requêtes coûteuses.
 
 Au-delà, on utilise `search_after` avec un point in time (PIT) : on ouvre un PIT (`POST offres/_pit?keep_alive=1m`) qui fige une vue cohérente de l'index, on trie sur un critère stable, puis chaque page repart des valeurs de tri du dernier résultat de la page précédente (`search_after`). Chaque requête ne traite que `size` documents, quelle que soit la profondeur.
+
+## Exercice 4.1
+
+**Quelle ville a le salaire moyen le plus élevé ?**
+
+Paris, avec un `salaire_min` moyen d'environ 57 442 € (suivie de Grenoble, ~53 046 €). C'est cohérent avec le jeu de données, où les salaires parisiens sont majorés de 6 000 €.
+
+**Sur combien d'offres la moyenne est-elle réellement calculée ?**
+
+`avg` ignore les documents où le champ est absent : seules les offres en CDI et CDD ont un `salaire_min`, soit 3389 offres sur 5000 (les 1611 alternances, stages et freelances sont exclues). Par ville, la moyenne porte donc sur moins d'offres que le `doc_count` affiché : pour Paris, 994 offres sur 1492.
+
+**Remplacez `ville` par `titre` : quelle erreur, et comment la corriger ?**
+
+Erreur 400 `illegal_argument_exception` :
+
+```
+Fielddata is disabled on [titre] in [offres]. Text fields are not optimised for operations that require per-document field data like aggregations and sorting, so these operations are disabled by default. Please use a keyword field instead.
+```
+
+`titre` est un champ `text` : il est découpé en tokens, on ne peut pas regrouper sur la valeur complète. La correction consiste à agréger sur le sous-champ `keyword` `titre.brut`, prévu pour ça dans le mapping.
+
+## Exercice 4.4
+
+Pour les 462 offres dont le titre contient « Data Engineer » :
+
+- les 5 compétences les plus demandées sont Airflow (315), Spark (313), Kafka (312), Python (311) et SQL (301) ;
+- le télétravail le plus fréquent est partiel (284 offres).
+
+**L'agrégation porte-t-elle sur tout l'index ou seulement sur les résultats de la requête ?**
+
+Seulement sur les résultats de la requête : les agrégations sont calculées sur les documents sélectionnés par `query`, ici les 462 offres « Data Engineer », et non sur les 5000 offres de l'index.
