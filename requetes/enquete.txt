@@ -1,0 +1,163 @@
+# TP2 — Partie 4 : enquête dans Kibana
+# Data view "Logs web" : motif logs-web-*, champ temporel @timestamp
+# Période Discover (absolue) : 23/09/2026 00:00 → 30/09/2026 00:00 (heure de Paris)
+# ES|QL travaille en UTC : "+ 2 hours" ramène à l'heure de Paris (CEST)
+
+# ---------------------------------------------------------------------------
+# 4.1 — Vue d'ensemble
+# ---------------------------------------------------------------------------
+
+FROM logs-web-default
+| STATS n = COUNT(*) BY http.response.status_code
+| SORT n DESC
+
+FROM logs-web-default
+| STATS n = COUNT(*) BY http.request.method
+| SORT n DESC
+
+FROM logs-web-default
+| EVAL local = @timestamp + 2 hours
+| STATS n = COUNT(*) BY jour = DATE_TRUNC(1 day, local)
+| SORT jour
+
+# ---------------------------------------------------------------------------
+# 4.2 — L'incident
+# ---------------------------------------------------------------------------
+
+# KQL (Discover)
+http.response.status_code >= 500
+
+# Pas d'une heure
+FROM logs-web-default
+| WHERE http.response.status_code >= 500
+| STATS erreurs = COUNT(*) BY heure = BUCKET(@timestamp, 1 hour)
+| SORT erreurs DESC
+| LIMIT 10
+
+# Pas de 5 minutes sur l'heure repérée, avec le volume total de l'API
+FROM logs-web-default
+| WHERE url.original LIKE "/api/*"
+  AND @timestamp >= "2026-09-28T11:40:00Z" AND @timestamp < "2026-09-28T13:10:00Z"
+| STATS n = COUNT(*), e503 = COUNT(CASE(http.response.status_code == 503, 1, null))
+  BY t = BUCKET(@timestamp, 5 minutes)
+| SORT t
+
+# Début, fin et nombre exact d'erreurs
+FROM logs-web-default
+| WHERE http.response.status_code >= 500
+  AND @timestamp >= "2026-09-28T12:00:00Z" AND @timestamp < "2026-09-28T13:00:00Z"
+| STATS erreurs = COUNT(*), debut = MIN(@timestamp), fin = MAX(@timestamp)
+  BY http.response.status_code
+
+# URL touchées
+FROM logs-web-default
+| WHERE http.response.status_code >= 500
+| STATS n = COUNT(*), codes = VALUES(http.response.status_code) BY url.original
+| SORT n DESC
+| LIMIT 20
+
+# Ce qui a répondu normalement pendant l'incident
+FROM logs-web-default
+| WHERE @timestamp >= "2026-09-28T12:00:00Z" AND @timestamp < "2026-09-28T12:45:00Z"
+| EVAL type = CASE(url.original LIKE "/api/offres*page=1", "api page=1",
+                   url.original LIKE "/api/*", "api autres pages",
+                   url.original LIKE "/offres/*", "offres",
+                   url.original LIKE "/recherche*", "recherche",
+                   url.original == "/", "accueil", "statiques/autres")
+| STATS n = COUNT(*) BY type, http.response.status_code
+| SORT type, http.response.status_code
+
+# Volume de l'API sur le même créneau (14:00–14:45, heure de Paris), jour par jour
+FROM logs-web-default
+| WHERE url.original LIKE "/api/*"
+| EVAL local = @timestamp + 2 hours
+| WHERE DATE_EXTRACT("HOUR_OF_DAY", local) == 14 AND DATE_EXTRACT("MINUTE_OF_HOUR", local) < 45
+| STATS api = COUNT(*), page1 = COUNT(CASE(url.original LIKE "*page=1", 1, null)),
+        ip = COUNT_DISTINCT(source.address)
+  BY jour = DATE_TRUNC(1 day, local)
+| SORT jour
+
+# Clients touchés
+FROM logs-web-default
+| WHERE http.response.status_code == 503
+  AND @timestamp >= "2026-09-28T12:00:00Z" AND @timestamp < "2026-09-28T12:45:00Z"
+| STATS n = COUNT(*), ip = COUNT_DISTINCT(source.address) BY user_agent.name
+| SORT n DESC
+
+# ---------------------------------------------------------------------------
+# 4.3 — L'activité suspecte
+# ---------------------------------------------------------------------------
+
+# KQL (Discover)
+http.response.status_code : 404
+source.address : "203.0.113.66" and http.response.status_code : 404
+user_agent.original : *zgrab*
+http.response.status_code : 404 and not user_agent.original : *zgrab*
+
+FROM logs-web-default
+| WHERE http.response.status_code == 404
+| STATS n = COUNT(*), debut = MIN(@timestamp), fin = MAX(@timestamp) BY source.address
+| SORT n DESC
+| LIMIT 5
+
+FROM logs-web-default
+| WHERE source.address == "203.0.113.66"
+| STATS n = COUNT(*), debut = MIN(@timestamp), fin = MAX(@timestamp)
+  BY http.response.status_code, user_agent.original
+
+FROM logs-web-default
+| WHERE user_agent.original LIKE "*zgrab*"
+| STATS n = COUNT(*) BY url.original
+| SORT n DESC
+
+FROM logs-web-default
+| WHERE user_agent.original LIKE "*zgrab*"
+| STATS n = COUNT(*) BY minute = BUCKET(@timestamp, 1 minute)
+| SORT minute
+
+# Les autres 404
+FROM logs-web-default
+| WHERE http.response.status_code == 404 AND NOT user_agent.original LIKE "*zgrab*"
+| STATS n = COUNT(*), ip = COUNT_DISTINCT(source.address),
+        min_id = MIN(labels.offre_id), max_id = MAX(labels.offre_id),
+        referrers = VALUES(http.request.referrer)
+
+# ---------------------------------------------------------------------------
+# 4.4 — Les offres les plus consultées
+# ---------------------------------------------------------------------------
+
+FROM logs-web-default
+| WHERE http.request.method == "GET" AND http.response.status_code == 200
+  AND labels.offre_id IS NOT NULL
+| STATS vues = COUNT(*) BY labels.offre_id
+| SORT vues DESC, labels.offre_id
+| LIMIT 12
+
+# Dev Tools : titre, ville, contrat en une seule requête
+GET offres/_search
+{
+  "size": 12,
+  "query": { "ids": { "values": [
+    "OFF-04662", "OFF-01153", "OFF-03141",
+    "OFF-00289", "OFF-00901", "OFF-01275", "OFF-01660", "OFF-02899",
+    "OFF-03126", "OFF-03145", "OFF-03524", "OFF-03923"
+  ] } },
+  "_source": ["titre", "ville", "contrat"]
+}
+
+# ---------------------------------------------------------------------------
+# 4.5 — Le public
+# ---------------------------------------------------------------------------
+
+FROM logs-web-default
+| STATS n = COUNT(*) BY user_agent.os.name
+| EVAL pct = ROUND(n * 100.0 / 20700, 1)
+| SORT n DESC
+
+FROM logs-web-default
+| EVAL mobile = user_agent.os.name IN ("iOS", "Android")
+| STATS n = COUNT(*) BY mobile
+
+FROM logs-web-default
+| STATS n = COUNT(*) BY user_agent.name
+| SORT n DESC

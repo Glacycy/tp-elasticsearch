@@ -1,0 +1,41 @@
+# TP2
+# Le mot de passe est celui de LOGSTASH_INTERNAL_PASSWORD dans .env
+
+GET offres/_count
+
+POST _security/role/logstash_writer
+{
+  "cluster": ["monitor", "manage_index_templates"],
+  "indices": [
+    { "names": ["offres", "logs-web-*"],
+      "privileges": ["write", "create", "create_index", "auto_configure"] }
+  ]
+}
+
+POST _security/user/logstash_internal
+{ "password": "<LOGSTASH_INTERNAL_PASSWORD>", "roles": ["logstash_writer"],
+  "full_name": "Logstash - ingestion" }
+
+GET _security/user/logstash_internal
+
+# Partie 1 — Vérifications autour des lancements du pipeline offres
+GET offres/_count
+GET offres/_doc/OFF-00002
+
+# Partie 2
+GET offres/_doc/OFF-99999
+GET offres/_count
+
+# Partie 3
+GET _data_stream/logs-web-default
+GET logs-web-default/_count
+GET logs-web-default/_count
+{ "query": { "term": { "tags": "_grokparsefailure" } } }
+GET logs-web-default/_search
+{ "size": 1, "sort": [{ "@timestamp": "asc" }] }
+GET logs-web-default/_mapping/field/http.response.status_code
+GET logs-web-default/_settings?filter_path=*.settings.index.mode
+
+# Partie 3
+GET logs-web-default/_count
+DELETE _data_stream/logs-web-default
